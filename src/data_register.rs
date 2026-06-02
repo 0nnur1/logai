@@ -1,7 +1,7 @@
 pub const UNULL: usize = usize::MAX;
 pub const NULL: u64 = u64::MAX;
 
-struct RadixNode {
+pub struct RadixNode {
     pub children: [usize; 2],
     pub payload: u64,
 }
@@ -35,6 +35,7 @@ impl RadixNode {
         self.children[child as usize] = child_idx;
     }
 }
+
 pub struct WorldState {
     nodes: Vec<RadixNode>,
 }
@@ -59,9 +60,12 @@ impl WorldState {
 
         self.nodes.push(RadixNode::new());
 
-        self.nodes[target_idx].set_child(new_node_idx, child);
-
-        Ok(new_node_idx)
+        if let Some(node) = self.nodes.get_mut(target_idx) {
+            node.set_child(new_node_idx, child);
+            Ok(new_node_idx)
+        } else {
+            Err("Failed to access target node safely")
+        }
     }
 
     fn get_start_index(&self, start: u64) -> usize {
@@ -80,13 +84,15 @@ impl WorldState {
         let mut stack: Vec<usize> = vec![current_idx];
 
         while let Some(ustart) = stack.pop() {
-            let children_to_wipe: [usize; 2] = self.nodes[ustart].children;
+            if let Some(node) = self.nodes.get_mut(ustart) {
+                let children_to_wipe = node.children;
 
-            function(&mut self.nodes[ustart]);
+                function(node);
 
-            for child_idx in children_to_wipe {
-                if child_idx != UNULL {
-                    stack.push(child_idx);
+                for child_idx in children_to_wipe {
+                    if child_idx != UNULL {
+                        stack.push(child_idx);
+                    }
                 }
             }
         }
@@ -117,7 +123,13 @@ impl WorldState {
 
         for shift in (end_shift..start_shift).rev() {
             let bit = ((binary_string >> shift) & 1) == 1;
-            let mut next_node_idx = self.nodes[current_idx].children[bit as usize];
+
+            let node = self
+                .nodes
+                .get(current_idx)
+                .ok_or("Radix tree corruption: active index missing")?;
+
+            let mut next_node_idx = node.children[bit as usize];
 
             if next_node_idx == UNULL {
                 next_node_idx = self.add_new_node(current_idx, bit)?;

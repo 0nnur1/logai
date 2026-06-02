@@ -15,6 +15,7 @@ const MAX_VALID_OPCODE: u64 = 10;
 // layout shifts
 const OP_SHIFT: u32 = 60;
 const FIELD_A_SHIFT: u32 = 30;
+const CONN_SHIFT: u32 = 15;
 
 // bitmasks
 const OP_MASK: u64 = 0xF;
@@ -33,8 +34,60 @@ pub enum GenomeError {
     DivisionByZero,
 }
 
+fn get_opcode(string: u64) -> u64 {
+    (string >> OP_SHIFT) & OP_MASK
+}
+
+fn structure_logic_genome(opcode: u64, payload_bits: u64, total_connections: u16) -> u64 {
+    let op_part = (opcode & OP_MASK) << OP_SHIFT;
+    let payload_part = (payload_bits & U30_MASK) << FIELD_A_SHIFT;
+    let conn_part = ((total_connections as u64) & U15_MASK) << CONN_SHIFT;
+    let recv_part = 0u64;
+
+    op_part | payload_part | conn_part | recv_part
+}
+
+fn structure_arith_genome(opcode: u64, stored_bits: u64, input_bits: u64) -> u64 {
+    let op_part = (opcode & OP_MASK) << OP_SHIFT;
+    let stored_part = (stored_bits & U30_MASK) << FIELD_A_SHIFT;
+    let input_part = input_bits & U30_MASK;
+
+    op_part | stored_part | input_part
+}
+
+fn structure_con_genome(opcode: u64, buffer_bits: u64, weight_bits: u64) -> u64 {
+    let op_part = (opcode & OP_MASK) << OP_SHIFT;
+    let buffer_part = (buffer_bits & U30_MASK) << FIELD_A_SHIFT;
+    let weight_part = weight_bits & U30_MASK;
+
+    op_part | buffer_part | weight_part
+}
+
+pub fn new_genome(string: u64, param: u64) -> Result<u64, GenomeError> {
+    let opcode = get_opcode(string);
+    if opcode > MAX_VALID_OPCODE {
+        return Err(GenomeError::InvalidOpcode(opcode));
+    }
+
+    let field_a_bits = (string >> FIELD_A_SHIFT) & U30_MASK;
+
+    let constructed_instruction = match opcode {
+        OP_AND | OP_OR | OP_NAND | OP_NOR | OP_XOR | OP_XNOR => {
+            structure_logic_genome(opcode, field_a_bits, param as u16)
+        }
+
+        OP_ADD | OP_MULT | OP_SUB | OP_DIV => structure_arith_genome(opcode, field_a_bits, param),
+
+        OP_CON => structure_con_genome(opcode, field_a_bits, param),
+
+        _ => unreachable!(),
+    };
+
+    Ok(constructed_instruction)
+}
+
 pub fn do_genome(instruction: u64) -> Result<u64, GenomeError> {
-    let opcode = (instruction >> OP_SHIFT) & OP_MASK;
+    let opcode = get_opcode(instruction);
 
     if opcode > MAX_VALID_OPCODE {
         return Err(GenomeError::InvalidOpcode(opcode));
@@ -42,10 +95,9 @@ pub fn do_genome(instruction: u64) -> Result<u64, GenomeError> {
 
     match opcode {
         // LOGIC GATES (0 to 5)
-        // layout: [ Opcode (4b) | Payload (30b) | Total Conn (15b) | Recv Input (15b) ]
         OP_AND | OP_OR | OP_NAND | OP_NOR | OP_XOR | OP_XNOR => {
             let payload_bits = (instruction >> FIELD_A_SHIFT) & U30_MASK;
-            let total_conn = ((instruction >> 15) & U15_MASK) as u16;
+            let total_conn = ((instruction >> CONN_SHIFT) & U15_MASK) as u16; // Uses constant now
             let recv_input = (instruction & U15_MASK) as u16;
 
             let condition_met = match opcode {
@@ -60,14 +112,12 @@ pub fn do_genome(instruction: u64) -> Result<u64, GenomeError> {
 
             let final_payload = if condition_met { payload_bits } else { 0 };
 
-            // return clean layout: wipes mutable tracker counters down to 0
             let op_part = opcode << OP_SHIFT;
             let out_payload = final_payload << FIELD_A_SHIFT;
             Ok(op_part | out_payload)
         }
 
         // ARITHMETIC GATES (6 to 9)
-        // layout: [ Opcode (4b) | Stored Int (30b) | Input Int (30b) ]
         OP_ADD | OP_MULT | OP_SUB | OP_DIV => {
             let stored_bits = (instruction >> FIELD_A_SHIFT) & U30_MASK;
             let input_bits = instruction & U30_MASK;
@@ -90,13 +140,12 @@ pub fn do_genome(instruction: u64) -> Result<u64, GenomeError> {
 
             let op_part = opcode << OP_SHIFT;
             let new_stored_part = (encode_u30(result_val) & U30_MASK) << FIELD_A_SHIFT;
-            let new_input_part = 0u64; // input is fully consumed
+            let new_input_part = 0u64;
 
             Ok(op_part | new_stored_part | new_input_part)
         }
 
         // STRUCTURE (10) [ OP_CON ]
-        // layout: [ Opcode (4b) | Buffer Int (30b) | Weight Int (30b) ]
         OP_CON => {
             let buffer_bits = (instruction >> FIELD_A_SHIFT) & U30_MASK;
             let weight_bits = instruction & U30_MASK;
@@ -104,18 +153,13 @@ pub fn do_genome(instruction: u64) -> Result<u64, GenomeError> {
             let buffer_val = decode_u30(buffer_bits);
             let weight_raw = decode_u30(weight_bits);
 
-            // convert fixed-point 10-bit precision representation safely to float
             let weight_float = (weight_raw as f32) / FIXED_POINT_SCALE;
-
-            // apply scaling conversion logic: buffer * weight
             let result_float = (buffer_val as f32) * weight_float;
-
-            // convert back to integer space
             let new_buffer_val = result_float.round() as i32;
 
             let op_part = opcode << OP_SHIFT;
             let new_buffer_part = (encode_u30(new_buffer_val) & U30_MASK) << FIELD_A_SHIFT;
-            let new_weight_part = weight_bits; // structural weight parameter is preserved
+            let new_weight_part = weight_bits;
 
             Ok(op_part | new_buffer_part | new_weight_part)
         }
