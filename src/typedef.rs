@@ -8,12 +8,12 @@ pub struct RadixNode {
 pub struct NullExceptionError(pub &'static str);
 
 pub struct Bitfield {
-    pub data: u64,
+    pub(crate) data: u64,
 }
 
 pub struct Payload {
     // Index 0 = false (right), Index 1 = true (left)
-    pub parts: [PayloadPart; 2],
+    pub(crate) parts: [PayloadPart; 2],
 }
 
 pub struct PayloadPart {
