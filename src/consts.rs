@@ -1,14 +1,26 @@
-pub struct RadixConsts;
-pub struct OpCodes;
+pub mod maze_consts {
+    pub const SMALL_SIZES: [usize; 4] = [5, 10, 16, 20];
+    pub const MEDIUM_SIZES: [usize; 4] = [30, 40, 50, 75];
+    pub const LARGE_SIZES: [usize; 4] = [100, 150, 250, 500];
 
-impl RadixConsts {
-    pub const DEFAULT: u64 = u64::MAX;
-    pub const OPCODE_SHIFT: u8 = 60;
-    pub const OPCODE_MASK: u64 = 0x0F;
-    pub const OPCODE_WIDTH: u8 = 4;
-    pub const PAYLOAD_MASK: u64 = 0x0FFF_FFFF_FFFF_FFFF;
+    pub const DEF_FULL: u8 = 0b11110000;
+    pub const DEF_BARREN: u8 = 0b00000000;
+
+    pub const MAZE_TYPE_VT: [u8; 2] = [DEF_BARREN, DEF_BARREN];
+    pub const WALLS_MASK: u8 = 0b11110000;
+    pub const GOAL_SHIFT: u8 = 3; // 0b00001000
+    pub const VISITED_SHIFT: u8 = 3; //0b00001000
+    pub const MOVEMENT_COST: u8 = 0b00000011;
+    pub const VISITED_MASK: u8 = 0b11110111;
+    pub struct prims;
+
+    impl prims {
+        pub const GOAL_SHIFT: u8 = 6;
+        pub const MOVEMENT_COST: u8 = 0b00000011;
+    }
 }
-impl OpCodes {
-    pub const NULL: u8 = u8::MAX;
-    pub const POINTER: u8 = 0;
+
+pub mod rng_consts {
+    pub const PHILOX_M: u32 = 0x9E3779B9; // Golden ratio constant
+    pub const WEYL_CONSTANT: u32 = 0xBB67AE85; // Weyl additive constant
 }

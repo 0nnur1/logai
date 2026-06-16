@@ -1,22 +1,29 @@
-#[derive(Debug, Clone, Copy)]
-pub struct Bitfield {
-    pub(crate) data: u64,
+#[derive(Clone, Copy, Debug)]
+pub struct Tile {
+    pub state: bool,
 }
-#[derive(Debug, Clone, Copy)]
-pub struct PayloadPart {
-    pub(crate) data: Bitfield,
+
+impl Tile {
+    #[inline(always)]
+    pub fn new(state: bool) -> Self {
+        Self { state }
+    }
 }
-#[derive(Debug, Clone, Copy)]
-pub struct RadixNode {
-    pub(crate) children: Payload,
-    pub(crate) payload: Payload,
+
+pub struct Position {
+    pub x: i16,
+    pub y: i16,
 }
-#[derive(Debug, Clone, Copy)]
-pub struct Payload {
-    // Index 0 = false (right), Index 1 = true (left)
-    pub(crate) parts: [PayloadPart; 2],
+
+pub struct RawMaze<const SIZE: usize> {
+    pub size: usize,
+    pub tiles: [Tile; SIZE * SIZE],
 }
-#[derive(Debug, Clone)]
-pub struct Radix {
-    pub(crate) nodes: Vec<RadixNode>,
+
+pub struct PrimsMaze<const SIZE: usize>(pub RawMaze<SIZE>);
+
+pub trait Maze {
+    fn new() -> Self;
+    fn mutate(&self, passes: u16, strength: u8);
+    fn try_move(&self, pos: &mut Position, dir: u8);
 }
