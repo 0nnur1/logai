@@ -1,128 +1,70 @@
-use crate::consts::maze_consts::{VISITED_MASK, VISITED_SHIFT};
-use crate::rng::rng_x_to_y;
-use crate::typedef::{Maze, Position, PrimsMaze, RawMaze, Tile};
+use crate::consts::maze_consts::*;
+use crate::typedef::{Cell, CellState, Maze};
+use std::sync::atomic::{AtomicU8, Ordering};
 
-impl<const SIZE: usize> RawMaze<SIZE> {
-    #[inline(always)]
-    pub(crate) fn new(state: bool) -> Self {
-        Self {
-            size: SIZE,
-            tiles: [Tile::new(state); SIZE * SIZE],
+// cell mapping: first 4 -> walls - next 3 -> identity - next 1 -> sleeping
+impl CellState {
+    #[inline]
+    fn classify(&self) -> usize {
+        TILE_TYPE[(state.get_walls()) as usize] as usize
+    }
+    pub fn get_best_action(neighborhood: [u8; 25], leaderboard_weight: [u8; 5]) -> u8 {
+        const CELL_POS: i32 = 12;
+        let mut least_cost: u8 = u8::MAX;
+        let mut best_choice: u8 = 0;
+        let mut leaderboard: [u8; 5] = [1; 5];
+
+        for cell in neighborhood.iter().copied() {
+            let idx = ((cell & IDENTITY_MASK) >> IDENTITY_SHIFT) as usize;
+            leaderboard[idx] = leaderboard[idx].saturating_add(1);
         }
-    }
 
-    #[inline(always)]
-    fn pos_to_index(&self, pos: Position) -> usize {
-        let x = (pos.x as usize) % SIZE;
-        let y = (pos.y as usize) % SIZE;
-        x + (y * SIZE)
-    }
+        for idx in 0..5 {
+            leaderboard[idx] = leaderboard[idx].wrapping_mul(leaderboard_weight[idx]);
+        }
 
-    #[inline(always)]
-    fn index_to_pos(&self, index: usize) -> Position {
-        let x = (index % SIZE) as i16;
-        let y = (index / SIZE) as i16;
-        Position::new(x, y)
-    }
+        for register in REGISTER_LUT.iter().copied() {
+            let mut new_walls: u8 = 0;
+            let mut helpfulness: i8 = 16;
 
-    #[inline(always)]
-    fn get_neighbors(&self, pos: usize) -> [usize; 4] {
-        let x = pos % SIZE;
-        let y = pos / SIZE;
+            for shift in (0..8u8).step_by(2).rev() {
+                let target: u8 = (register >> shift) & 3;
+                let is_destroy: u8 = (target == 1) as u8;
+                let is_add: u8 = (target == 2) as u8;
+                let bit_shift: u8 = shift >> 1;
 
-        let north_idx = (((y + SIZE - 1) % SIZE) * SIZE) + x;
-        let south_idx = (((y + 1) % SIZE) * SIZE) + x;
-        let east_idx = (y * SIZE) + ((x + 1) % SIZE);
-        let west_idx = (y * SIZE) + ((x + SIZE - 1) % SIZE);
+                let self_wall: u8 =
+                    (neighborhood[CELL_POS as usize] >> (bit_shift + WALLS_SHIFT)) & 1;
+                let updated_wall: u8 = (self_wall & (1 - is_destroy)) | is_add;
+                new_walls |= updated_wall << bit_shift;
 
-        [north_idx, east_idx, south_idx, west_idx]
-    }
-}
+                let lut_idx: usize = ((shift >> 1) & 3) as usize;
+                let offset: i8 = OFFSET_LUT[lut_idx] as i8;
+                let neighbor_idx: usize = (CELL_POS + offset) as usize;
+                let neighbor: u8 = neighborhood[neighbor_idx];
 
-impl<const SIZE: usize> PrimsMaze<SIZE> {
-    pub(crate) fn make(&mut self, unique_id: u32, seed: u32) {
-        const CAP: usize = 32;
-        let size = SIZE * SIZE;
-        let mut frontier: [u32; CAP] = [0; CAP];
+                let nid: u8 = (neighbor & IDENTITY_MASK) >> IDENTITY_SHIFT;
+                let nwalls: u8 = (neighbor & WALLS_MASK) >> WALLS_SHIFT;
+                let naction: u8 = bit_shift ^ 2;
 
-        let mut len: u8 = 1;
+                let init_delta: u8 = (nwalls.count_ones() as u8).abs_diff(nid);
+                let new_nwalls: u8 = (nwalls & !(is_destroy << naction)) | (is_add << naction);
+                let new_delta: u8 = (new_nwalls.count_ones() as u8).abs_diff(nid);
 
-        let root: u32 = rng_x_to_y(0, size as i32, unique_id, seed) as u32;
-        self.0.tiles[root as usize].0 |= 1 << VISITED_SHIFT;
-
-        frontier[1] = root << 2;
-
-        let mut iter: u32 = 0;
-        while len > 0 {
-            iter += 1;
-
-            let target: usize = rng_x_to_y(0, len as i32, unique_id, seed + iter) as usize + 1;
-
-            let packed_current = frontier[target];
-            let current = (packed_current >> 2) as usize;
-
-            frontier[target] = frontier[len as usize];
-            len -= 1;
-
-            let came_from_dir = (packed_current & 0b11) as usize;
-
-            let execution_mask = ((iter > 1) as i16).wrapping_neg() as u16;
-
-            let opposite_dir = (came_from_dir + 2) % 4;
-            let parent = self.0.get_neighbors(current)[opposite_dir];
-
-            let current_wall_clear = (1u16 << opposite_dir) & execution_mask;
-            let parent_wall_clear = (1u16 << came_from_dir) & execution_mask;
-
-            self.0.tiles[current].0 &= !current_wall_clear;
-            self.0.tiles[parent].0 &= !parent_wall_clear;
-
-            let neighbors: [usize; 4] = self.0.get_neighbors(current);
-            let start_dir: usize = rng_x_to_y(0, 4, unique_id, seed + iter * 7919) as usize;
-
-            for i in 0..4 {
-                let dir: usize = (start_dir + i) & 3;
-                let neighbor = neighbors[dir];
-                let visited: u8 = (((self.0.tiles[neighbor].0 >> VISITED_SHIFT) & 1) ^ 1) as u8;
-                let full_len: u8 = (len < (CAP) as u8) as u8;
-                let validity: u8 = visited & full_len;
-
-                self.0.tiles[neighbor].0 |= validity << VISITED_SHIFT;
-
-                let packed_neighbor = ((neighbor as u32) << 2) | (dir as u32);
-
-                len += validity;
-                frontier[len as usize * validity as usize] = packed_neighbor;
+                helpfulness += (init_delta as i8) - (new_delta as i8);
             }
+
+            let identity: u8 = new_walls.count_ones() as u8;
+            let identity_cost: u8 = leaderboard[identity as usize];
+
+            let value: u8 = (identity_cost.saturating_mul(16)).saturating_div(helpfulness)
+            let lesser: u8 = (value < least_cost) as u8;
+            let lesser_mask: u8 = !lesser.wrapping_sub(1);
+            let packed_choice: u8 = (new_walls << WALLS_SHIFT) | (identity << IDENTITY_SHIFT);
+
+            least_cost = (value & lesser_mask) | (least_cost & !lesser_mask);
+            best_choice = (packed_choice & lesser_mask) | (best_choice & !lesser_mask);
         }
-    }
-}
-
-impl<const SIZE: usize> Maze for PrimsMaze<SIZE> {
-    fn new() -> Self {
-        PrimsMaze(RawMaze::new(true))
-    }
-
-    fn mutate(&self, _passes: u16, _strength: u8) {}
-
-    fn try_move(&self, pos: &mut Position, _dir: u8) {
-        pos.y = pos.y.wrapping_add(2);
-    }
-}
-
-impl Position {
-    #[inline(always)]
-    pub fn new(x: i16, y: i16) -> Self {
-        Position { x, y }
-    }
-
-    #[inline(always)]
-    pub fn get_neighbors(&self) -> [Position; 4] {
-        [
-            Position::new(self.x, self.y - 1),
-            Position::new(self.x + 1, self.y),
-            Position::new(self.x, self.y + 1),
-            Position::new(self.x - 1, self.y),
-        ]
+        best_choice
     }
 }
