@@ -4,7 +4,6 @@ use crate::consts::rng_consts::{PHILOX_M, WEYL_CONSTANT};
 fn philox2x32_round(counter: u32, key: u32) -> (u32, u32) {
     let product = (counter as u64).wrapping_mul(PHILOX_M as u64);
     let hi = (product >> 32) as u32;
-    let lo = product as u32;
 
     (hi ^ key, key.wrapping_add(WEYL_CONSTANT))
 }

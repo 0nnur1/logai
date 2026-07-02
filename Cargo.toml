@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+unroll = "0.1.5"
 fastrand = "2.4.1"
 rayon = "1.10" 
 cuda-core = { path = "/home/onnuri/projects/cuda-oxide/crates/cuda-core" }

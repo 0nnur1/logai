@@ -1,14 +1,16 @@
-use core::sync::atomic::AtomicU8;
-
 pub struct CellState {
-    pub state: AtomicU8,
+    pub state: u8,
 }
 pub struct Cell {
     pub parts: [CellState; 2],
 }
-pub struct Maze<const u16: SIZE> {
-    pub size: u32,
-    pub tiles: [Cell; SIZE * SIZE],
-    // turn, path, junction, air, solid, dead-end
-    pub leaderboard: [[i8; 2]; 6],
+/// this uses a mortan curve do NOT naively try to get data (unless you know what your doing)
+/// size is equal to total cells
+/// length <= 16::MAX
+/// size == LENGTH*LENGTH
+/// maze must be a power of 2
+pub struct Maze<const SIZE: usize, const LENGTH: u16> {
+    pub cells: [Cell; SIZE],
+    pub length: u16,
+    pub x_mask: u32, // e.g., 0x5555 (dilated bits for X up to length)
 }

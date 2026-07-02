@@ -34,20 +34,8 @@ pub mod maze_consts {
     pub const IDENTITY_MASK: u8 = 0b00001110;
     pub const IDENTITY_SHIFT: u8 = 1;
 
-    pub const REGISTER_LUT: [u8; 81] = {
-        let mut table = [0u8; 81];
-        let mut i = 0;
-        while i < 81 {
-            let nn = (i / 27) % 3;
-            let ee = (i / 9) % 3;
-            let ss = (i / 3) % 3;
-            let ww = i % 3;
-            table[i as usize] = (nn << 6) | (ee << 4) | (ss << 2) | ww;
-            i += 1;
-        }
-        table
-    };
-    pub const OFFSET_LUT: [i8; 4] = [-1, 5, 1, -5];
+    pub const XMASK: u32 = 0x55555555;
+    pub const YMASK: u32 = 0xAAAAAAAA;
 }
 
 pub mod rng_consts {
