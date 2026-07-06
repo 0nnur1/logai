@@ -1,4 +1,5 @@
 use crate::consts::maze_consts::*;
+use crate::rng::generate_rand_u32;
 use crate::typedef::{Cell, CellState, Maze};
 
 // cell mapping: first 4 -> walls - next 3 -> identity - next 1 -> sleeping
@@ -20,13 +21,15 @@ impl CellState {
 
         pub const RECIP_U32: [u32; 32] = {
             let mut arr: [u32; 32] = [0u32; 32];
-            let mut i: usize = 1;
+            let mut i: u8 = 1;
             while i < 32 {
-                arr[i] = ((1u64 << 32) / i as u64) as u32;
+                arr[i as usize] = ((1u64 << 32) / i as u64) as u32;
                 i += 1;
             }
             arr
         };
+
+        pub const POPCOUNT_4BIT: [u8; 16] = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
 
         const CELL_POS: i32 = 12;
 
@@ -35,7 +38,7 @@ impl CellState {
         let mut leaderboard: [u32; 5] = [1u32; 5];
 
         for &cell in &neighborhood {
-            let idx = ((cell & IDENTITY_MASK) >> IDENTITY_SHIFT) as usize;
+            let idx: usize = ((cell & IDENTITY_MASK) >> IDENTITY_SHIFT) as usize;
             unsafe {
                 std::intrinsics::assume(idx < 5);
             }
@@ -70,24 +73,26 @@ impl CellState {
                     (nwalls & !(is_destroy << (bit_shift ^ 2))) | (is_add << (bit_shift ^ 2));
 
                 helpfulness = (helpfulness as i8
-                    - ((nwalls.count_ones() as u8).abs_diff(nid) as i8
-                        - (new_nwalls.count_ones() as u8).abs_diff(nid) as i8))
-                    as u8;
+                    - (unsafe {
+                        (*POPCOUNT_4BIT.get_unchecked(nwalls as usize) as i8 - nid as i8).abs()
+                    } - unsafe {
+                        (*POPCOUNT_4BIT.get_unchecked(new_nwalls as usize) as i8 - nid as i8).abs()
+                    })) as u8;
             }
 
-            let identity: u8 = new_walls.count_ones() as u8;
+            let identity: u8 = unsafe { *POPCOUNT_4BIT.get_unchecked(new_walls as usize) };
 
             unsafe {
                 std::intrinsics::assume(helpfulness != 0);
                 std::intrinsics::assume(helpfulness < 32);
+                std::intrinsics::assume(identity < 5);
             }
 
             let value: u32 = ((((leaderboard[identity as usize] << 4) as u64)
                 * RECIP_U32[helpfulness as usize] as u64)
                 >> 32) as u32;
 
-            let lesser: u8 = (value < least_cost) as u8;
-            let lesser_mask: u32 = !lesser.wrapping_sub(1) as u32;
+            let lesser_mask: u32 = !((value < least_cost) as u32).wrapping_sub(1);
 
             least_cost = (value & lesser_mask) | (least_cost & !lesser_mask);
 
@@ -99,10 +104,14 @@ impl CellState {
         best_choice
     }
 
-    #[inline(always)]
-    pub fn apply_action(&mut self, action: u8, rng_chunk: u8) {
-        let mask: u8 = (rng_chunk & (rng_chunk << 4)) | 14;
+    pub fn apply_action(&mut self, action: u8, rng_chunk: u8, skipped: bool) {
+        let mask: u8 = ((rng_chunk & (rng_chunk << 4)) | 14) & ((skipped as u8).wrapping_sub(1));
+        self.state ^= 1 - skipped as u8; // wakeup / sleep
         self.state = (action & mask) | (self.state & !mask);
+    }
+
+    pub fn new() -> CellState {
+        CellState { state: 0 }
     }
 }
 // x = even, y = odd
@@ -138,18 +147,134 @@ impl<const SIZE: usize, const LENGTH: u16> Maze<SIZE, LENGTH> {
         let wrapped_y: u32 = y_bits.wrapping_sub(dy_dilated) & y_mask;
         wrapped_y | (p & !y_mask)
     }
+
+    /// heyyy buddyyy, so if you use anything for this which doesnt follow these rules, you get (drumroll please) UB
+    /// - - -
+    /// size == length**2
+    ///
+    /// length == power of 2
+    ///
+    /// bits of length == x if length = 2**x
+    /// - - -
+    /// this is crucial, read it and make sure you understand
+    /// ---
+    #[inline(always)]
+    pub fn new(bits_of_length: u8, weights: [u8; 5]) -> Self {
+        Maze {
+            cells: [Cell::new(); SIZE],
+            length: LENGTH,
+            x_mask: 0x55555555 | (0u32.wrapping_sub(1)) << (bits_of_length),
+            leaderboard_weight: weights,
+        }
+    }
+    /// hello again (or first time) so here are the rules (follow or ub, fuck you)
+    /// - - -
+    /// stride length is vertical.
+    /// stride has to be po2.
+    /// stride has to be <= length.
+    /// stride has to be greater than 0.
+    /// - - -
+    /// READ THIS DUMBASS
+    /// ---
+    pub unsafe fn process_stride(
+        &mut self,
+        stride_l: u16,
+        s_pos: u32,
+        flip: bool,
+        id: u32,
+        seed: &mut u32,
+    ) {
+        // btw this code is a warcrime, deadass never change it unless you can promise yourself you understand it (or sell your soul)
+        const Y2: u32 = dilate_16_to_u32(2, 1);
+        const X2: u32 = dilate_16_to_u32(2, 0);
+
+        const Y1: u32 = dilate_16_to_u32(1, 1);
+        const X1: u32 = dilate_16_to_u32(1, 0);
+
+        let mut neighborhood: [u8; 25] = [0; 25];
+
+        let mut pos: u32 = self.sub_x(self.add_y(s_pos, Y2), X2);
+
+        // setup the neighborhood
+        for y in 0..5usize {
+            let mut xpos_d: u32 = pos;
+            for x in 0..5usize {
+                *neighborhood.get_unchecked_mut((y * 5) + x) =
+                    self.cells.get_unchecked(xpos_d as usize).get_root(flip);
+                xpos_d = self.add_x(xpos_d, X1)
+            }
+            pos = self.add_y(pos, Y1);
+        }
+        let mut active: u32 = s_pos;
+        for _ in (0..stride_l).step_by(16) {
+            let rng_block_skip: u32 = generate_rand_u32(id, *seed);
+            *seed += 1;
+            for b in 0..4u8 {
+                let rng_block_what: u32 = generate_rand_u32(id, *seed);
+                *seed += 1;
+                for a in 0..4u8 {
+                    let n: u8 = (b << 3) + (a << 1);
+                    self.cells.get_unchecked_mut(active as usize).act(
+                        flip,
+                        neighborhood,
+                        self.leaderboard_weight,
+                        (rng_block_what >> (a as u32 * 8)) as u8,
+                        (((rng_block_skip >> n) & 1) == 1)
+                            & (((rng_block_skip >> (n + 1)) & 1) == 1),
+                    );
+                    active = self.add_y(active, Y1);
+                    neighborhood.rotate_left(5);
+                    let mut xpos_d: u32 = pos;
+                    for x in 0..5usize {
+                        *neighborhood.get_unchecked_mut(20 + x) =
+                            self.cells.get_unchecked(xpos_d as usize).get_root(flip);
+                        xpos_d = self.add_x(xpos_d, X1)
+                    }
+                    pos = self.add_y(pos, Y1);
+                }
+            }
+        }
+    }
 }
 
 impl Cell {
     pub fn act(
         &mut self,
-        flip: u8,
+        flip: bool,
         neighborhood: [u8; 25],
         leaderboard_weight: [u8; 5],
         rng_chunk: u8,
+        skipped: bool,
     ) {
         let a: u8 = CellState::get_best_action(neighborhood, leaderboard_weight);
-        unsafe { std::intrinsics::assume(flip <= 1) };
-        self.parts[flip as usize].apply_action(a, rng_chunk);
+        unsafe { std::intrinsics::assume(flip as usize <= 1) };
+        self.parts[1 - flip as usize].apply_action(a, rng_chunk, skipped);
+    }
+    pub fn new() -> Cell {
+        Cell {
+            parts: [CellState::new(); 2],
+        }
+    }
+    #[inline(always)]
+    pub fn get_root(self, flip: bool) -> u8 {
+        self.parts[flip as usize].state
     }
 }
+
+/// shift == 0; -> X
+///
+/// shift == 1; -> Y
+/// - - -
+/// shift > 1; -> Broken
+pub const fn dilate_16_to_u32(input: u16, shift: u8) -> u32 {
+    let mut x: u32 = input as u32;
+    x = (x | (x << 8)) & 0x00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F;
+    x = (x | (x << 2)) & 0x33333333;
+    x = (x | (x << 1)) & 0x55555555;
+    x << shift
+}
+
+// heyyyy if your reading this, wassup, im the dev who wrote this.
+// so if your struggling to understand do i have the method for you
+// git gud.
