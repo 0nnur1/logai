@@ -1,3 +1,23 @@
+/*
+ * Copyright (C) 2026 0nnur1
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://gnu.org>.
+ *
+ * For source code requests or inquiries, please contact:
+ * Email: onnuri3412@gmail.com
+ */
+
 use crate::consts::maze_consts::*;
 use crate::rng::generate_rand_u32;
 use crate::typedef::{Cell, CellState, Maze};
@@ -39,10 +59,11 @@ impl CellState {
 
         for &cell in &neighborhood {
             let idx: usize = ((cell & IDENTITY_MASK) >> IDENTITY_SHIFT) as usize;
+
             unsafe {
-                std::intrinsics::assume(idx < 5);
+                let ptr: *mut u32 = leaderboard.as_mut_ptr().add(idx);
+                *ptr = (*ptr).saturating_add(1);
             }
-            leaderboard[idx] = leaderboard[idx].saturating_add(1);
         }
 
         for i in 0..5 {
@@ -82,15 +103,12 @@ impl CellState {
 
             let identity: u8 = unsafe { *POPCOUNT_4BIT.get_unchecked(new_walls as usize) };
 
+            let value: u32;
             unsafe {
-                std::intrinsics::assume(helpfulness != 0);
-                std::intrinsics::assume(helpfulness < 32);
-                std::intrinsics::assume(identity < 5);
+                value = ((((*leaderboard.get_unchecked(identity as usize) << 4) as u64)
+                    * (*RECIP_U32.get_unchecked(helpfulness as usize) as u64))
+                    >> 32) as u32;
             }
-
-            let value: u32 = ((((leaderboard[identity as usize] << 4) as u64)
-                * RECIP_U32[helpfulness as usize] as u64)
-                >> 32) as u32;
 
             let lesser_mask: u32 = !((value < least_cost) as u32).wrapping_sub(1);
 
@@ -105,7 +123,8 @@ impl CellState {
     }
 
     pub fn apply_action(&mut self, action: u8, rng_chunk: u8, skipped: bool) {
-        let mask: u8 = ((rng_chunk & (rng_chunk << 4)) | 14) & ((skipped as u8).wrapping_sub(1));
+        let mask: u8 = ((rng_chunk & (rng_chunk << 4)) | 14)
+            & (((self.state & 1) | (skipped as u8)).wrapping_sub(1));
         self.state ^= 1 - skipped as u8; // wakeup / sleep
         self.state = (action & mask) | (self.state & !mask);
     }
@@ -247,8 +266,11 @@ impl Cell {
         skipped: bool,
     ) {
         let a: u8 = CellState::get_best_action(neighborhood, leaderboard_weight);
-        unsafe { std::intrinsics::assume(flip as usize <= 1) };
-        self.parts[1 - flip as usize].apply_action(a, rng_chunk, skipped);
+        unsafe {
+            self.parts
+                .get_unchecked_mut(1 - flip as usize)
+                .apply_action(a, rng_chunk, skipped);
+        }
     }
     pub fn new() -> Cell {
         Cell {
