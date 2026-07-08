@@ -4,9 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+unroll = "0.1.5"
+fastrand = "2.4.1"
 rayon = "1.10" 
+cuda-core = { path = "/home/onnuri/projects/cuda-oxide/crates/cuda-core" }
+cuda-device = { path = "/home/onnuri/projects/cuda-oxide/crates/cuda-device" }
+cuda-host = { path = "/home/onnuri/projects/cuda-oxide/crates/cuda-host" }
 
 [profile.release]
 opt-level = 3
 lto = true          
 codegen-units = 1
+
+[toolchain]
+channel = "nightly-2026-04-03"
+components = ["rust-src", "rustc-dev"]
+
+[build]
+rustflags = [
+    "-Zcodegen-backend=/home/onnuri/projects/cuda-oxide/crates/rustc-codegen-cuda/target/debug/librustc_codegen_cuda.so"
+]
+
+[unstable]
+codegen-backend = true
