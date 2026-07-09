@@ -22,16 +22,16 @@ use crate::consts::rng_consts::{PHILOX_M, WEYL_CONSTANT};
 
 #[inline(always)]
 fn philox2x32_round(counter: u32, key: u32) -> (u32, u32) {
-    let product = (counter as u64).wrapping_mul(PHILOX_M as u64);
-    let hi = (product >> 32) as u32;
+    let product: u64 = (counter as u64).wrapping_mul(PHILOX_M as u64);
+    let hi: u32 = (product >> 32) as u32;
 
     (hi ^ key, key.wrapping_add(WEYL_CONSTANT))
 }
 
 #[inline(always)]
 pub fn generate_rand_u32(unique_id: u32, seed: u32) -> u32 {
-    let mut counter = unique_id;
-    let mut key = seed;
+    let mut counter: u32 = unique_id;
+    let mut key: u32 = seed;
 
     for _ in 0..10 {
         let (c, k) = philox2x32_round(counter, key);

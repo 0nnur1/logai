@@ -35,6 +35,7 @@ pub struct Cell {
 pub struct Maze<const SIZE: usize, const LENGTH: u16> {
     pub cells: [Cell; SIZE],
     pub length: u16,
-    pub x_mask: u32, // e.g., 0x5555 (dilated bits for X up to lengt
+    pub x_mask: u32,
+    pub y_mask: u32,
     pub leaderboard_weight: [u8; 5],
 }
