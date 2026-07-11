@@ -26,6 +26,7 @@ use crate::typedef::{Cell, CellState, Maze};
 impl CellState {
     #[inline(always)]
     pub fn get_best_action(neighborhood: [u8; 25], leaderboard_weight: [u8; 5]) -> u8 {
+        debug_assert!(leaderboard_weight.iter().all(|&x| x > 0));
         pub const REGISTER_LUT: [u8; 81] = {
             let mut table: [u8; 81] = [0u8; 81];
             let mut i: u8 = 0;
@@ -58,7 +59,9 @@ impl CellState {
         let mut leaderboard: [u32; 5] = [1u32; 5];
 
         for &cell in &neighborhood {
-            let idx: usize = ((cell & IDENTITY_MASK) >> IDENTITY_SHIFT) as usize;
+            let idx = ((cell & IDENTITY_MASK) >> IDENTITY_SHIFT) as usize;
+
+            debug_assert!(idx < 5);
 
             unsafe {
                 let ptr: *mut u32 = leaderboard.as_mut_ptr().add(idx);
@@ -67,32 +70,40 @@ impl CellState {
         }
 
         for i in 0..5 {
-            leaderboard[i] *= leaderboard_weight[i] as u32;
+            unsafe {
+                *leaderboard.get_unchecked_mut(i) *= *leaderboard_weight.get_unchecked(i) as u32;
+            }
         }
 
-        for &register in &REGISTER_LUT {
+        let center: u8 = unsafe { *neighborhood.get_unchecked(CELL_POS as usize) };
+
+        for register in REGISTER_LUT {
             let mut new_walls: u8 = 0u8;
             let mut helpfulness: u8 = 16u8;
 
-            for shift in (0..8u8).step_by(2).rev() {
+            for shift in [6u8, 4, 2, 0] {
                 let target: u8 = (register >> shift) & 3;
                 let is_destroy: u8 = (target == 1) as u8;
                 let is_add: u8 = (target == 2) as u8;
                 let bit_shift: u8 = shift >> 1;
 
-                new_walls |= (((neighborhood[CELL_POS as usize] >> (bit_shift + WALLS_SHIFT)) & 1)
-                    & (1 - is_destroy)
+                new_walls |= (((center >> (bit_shift + WALLS_SHIFT)) & 1) & (1 - is_destroy)
                     | is_add)
                     << bit_shift;
 
+                let offset: i8 = unsafe { *OFFSET_LUT.get_unchecked((shift >> 1) as usize) };
+
                 let neighbor: u8 =
-                    neighborhood[(CELL_POS + OFFSET_LUT[(shift >> 1) as usize] as i32) as usize];
+                    unsafe { *neighborhood.get_unchecked((CELL_POS + offset as i32) as usize) };
 
                 let nid: u8 = (neighbor & IDENTITY_MASK) >> IDENTITY_SHIFT;
                 let nwalls: u8 = (neighbor & WALLS_MASK) >> WALLS_SHIFT;
                 let new_nwalls: u8 =
                     (nwalls & !(is_destroy << (bit_shift ^ 2))) | (is_add << (bit_shift ^ 2));
 
+                debug_assert!(new_walls < 16);
+                debug_assert!(new_nwalls < 16);
+                debug_assert!(nwalls < 16);
                 helpfulness = (helpfulness as i8
                     - (unsafe {
                         (*POPCOUNT_4BIT.get_unchecked(nwalls as usize) as i8 - nid as i8).abs()
@@ -103,7 +114,13 @@ impl CellState {
 
             let identity: u8 = unsafe { *POPCOUNT_4BIT.get_unchecked(new_walls as usize) };
 
+            debug_assert!(identity < 5);
+
             let value: u32;
+
+            debug_assert!(helpfulness < 32);
+            debug_assert_ne!(helpfulness, 0);
+
             unsafe {
                 value = ((((*leaderboard.get_unchecked(identity as usize) << 4) as u64)
                     * (*RECIP_U32.get_unchecked(helpfulness as usize) as u64))
@@ -118,12 +135,13 @@ impl CellState {
                 & lesser_mask as u8)
                 | (best_choice & !lesser_mask as u8);
         }
-
         best_choice
     }
 
     #[inline(always)]
     pub fn apply_action(&mut self, action: u8, rng_chunk: u8, skipped: bool) {
+        debug_assert!(((action & IDENTITY_MASK) >> IDENTITY_SHIFT) < 5);
+        debug_assert!(((action & WALLS_MASK) >> WALLS_SHIFT) < 16);
         let mask: u8 = ((rng_chunk & (rng_chunk << 4)) | 14)
             & (((self.state & 1) | (skipped as u8)).wrapping_sub(1));
         self.state ^= 1 - skipped as u8; // wakeup / sleep
@@ -168,12 +186,22 @@ impl<const SIZE: usize, const LENGTH: u16> Maze<SIZE, LENGTH> {
     ///
     /// length == power of 2
     ///
+    /// length >= 16
+    ///
     /// bits of length == x if length = 2**x
+    ///
+    /// weights != 0
     /// - - -
     /// this is crucial, read it and make sure you understand
     /// ---
     #[inline(always)]
     pub fn new(bits_of_length: u8, weights: [u8; 5]) -> Self {
+        debug_assert_eq!(SIZE, LENGTH as usize * LENGTH as usize);
+        debug_assert!(LENGTH.is_power_of_two());
+        debug_assert_eq!(LENGTH.trailing_zeros(), bits_of_length as u32);
+        debug_assert!(weights.iter().all(|&w| w > 0));
+        debug_assert!(LENGTH >= 16);
+        debug_assert!(LENGTH <= 1024);
         Maze {
             cells: [Cell::new(); SIZE],
             length: LENGTH,
@@ -201,6 +229,10 @@ impl<const SIZE: usize, const LENGTH: u16> Maze<SIZE, LENGTH> {
         seed: &mut u32,
     ) {
         // btw this code is a warcrime, deadass never change it unless you can promise yourself you understand it (or sell your soul)
+        debug_assert!(stride_l > 0);
+        debug_assert!(stride_l.is_power_of_two());
+        debug_assert!(stride_l <= LENGTH);
+
         const Y2: u32 = dilate_16_to_u32(2, 1);
         const X2: u32 = dilate_16_to_u32(2, 0);
 
@@ -289,6 +321,8 @@ impl Cell {
 /// shift > 1; -> Broken
 #[inline(always)]
 pub const fn dilate_16_to_u32(input: u16, shift: u8) -> u32 {
+    debug_assert!(shift <= 1);
+
     let mut x: u32 = input as u32;
     x = (x | (x << 8)) & 0x00FF00FF;
     x = (x | (x << 4)) & 0x0F0F0F0F;
@@ -300,3 +334,86 @@ pub const fn dilate_16_to_u32(input: u16, shift: u8) -> u32 {
 // heyyyy if your reading this, wassup, im the dev who wrote this.
 // so if your struggling to understand do i have the method for you...
 // git gud.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dilate_x() {
+        assert_eq!(dilate_16_to_u32(0b1, 0), 0x1);
+        assert_eq!(dilate_16_to_u32(0b10, 0), 0x4);
+        assert_eq!(dilate_16_to_u32(0b11, 0), 0x5);
+    }
+
+    #[test]
+    fn dilate_y() {
+        assert_eq!(dilate_16_to_u32(0b1, 1), 0x2);
+        assert_eq!(dilate_16_to_u32(0b10, 1), 0x8);
+        assert_eq!(dilate_16_to_u32(0b11, 1), 0xA);
+    }
+
+    #[test]
+    fn cellstate_new_is_zero() {
+        assert_eq!(CellState::new().state, 0);
+    }
+
+    #[test]
+    fn cell_new_is_zeroed() {
+        let c = Cell::new();
+        assert_eq!(c.parts[0].state, 0);
+        assert_eq!(c.parts[1].state, 0);
+    }
+
+    #[test]
+    fn apply_action_updates_when_not_skipped() {
+        let mut s = CellState::new();
+
+        let action = (0b0011 << WALLS_SHIFT) | (2 << IDENTITY_SHIFT);
+
+        s.apply_action(action, 0xFF, false);
+
+        assert_ne!(s.state, 0);
+
+        assert!(((s.state & IDENTITY_MASK) >> IDENTITY_SHIFT) < 5);
+        assert!(((s.state & WALLS_MASK) >> WALLS_SHIFT) < 16);
+    }
+
+    #[test]
+    fn maze_constructor_sets_length() {
+        const L: u16 = 16;
+        const S: usize = (L as usize) * (L as usize);
+
+        let maze = Maze::<S, L>::new(3, [1; 5]);
+
+        assert_eq!(maze.length, L);
+    }
+    #[test]
+
+    fn best_action_returns_valid_state() {
+        let neighborhood = [0u8; 25];
+
+        let action = CellState::get_best_action(neighborhood, [1; 5]);
+
+        let walls = (action & WALLS_MASK) >> WALLS_SHIFT;
+        let id = (action & IDENTITY_MASK) >> IDENTITY_SHIFT;
+
+        assert!(walls < 16);
+        assert!(id < 5);
+
+        // sleep bit should never be written
+        assert_eq!(action & 1, 0);
+    }
+    #[test]
+    fn get_root_uses_correct_half() {
+        let mut c = Cell::new();
+
+        c.parts[0].state = 17;
+        c.parts[1].state = 42;
+
+        assert_eq!(c.get_root(false), 17);
+        assert_eq!(c.get_root(true), 42);
+    }
+}
+
+// TODO: add gpu schedualer
