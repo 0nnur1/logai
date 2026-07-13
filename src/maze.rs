@@ -21,6 +21,7 @@
 use crate::consts::maze_consts::*;
 use crate::rng::generate_rand_u32;
 use crate::typedef::{Cell, CellState, Maze};
+use cuda_device::{cuda_module, kernel, thread};
 
 // cell mapping: first 4 -> walls - next 3 -> identity - next 1 -> sleeping
 impl CellState {
@@ -416,4 +417,51 @@ mod tests {
     }
 }
 
-// TODO: add gpu schedualer
+#[cuda_module]
+pub mod kernel {
+    use super::*;
+
+    #[kernel]
+    #[allow(no_mangle_generic_items)]
+    pub unsafe fn process_cycle<const SIZE: usize, const LENGTH: u16>(
+        stride_l: u16,
+        s_pos: u32,
+        cycles: u16,
+        maze: *mut Maze<SIZE, LENGTH>,
+        total_threads: u16,
+    ) {
+        let idx: u16 = (thread::blockIdx_x() as u16) * (thread::blockDim_x() as u16)
+            + (thread::threadIdx_x() as u16);
+
+        if idx >= total_threads {
+            return;
+        } // guard agaisnt invalid threads
+
+        let length_mask: u16 = LENGTH - 1;
+        let log2_length: u16 = LENGTH.trailing_zeros() as u16;
+
+        // how many times over LENGTH (Y-axis steps)
+        let times_over: u16 = idx >> log2_length;
+        // remainder (X-axis steps)
+        let rem_x: u16 = idx & length_mask;
+
+        let linear_x_offset: u16 = rem_x;
+        let linear_y_offset: u16 = times_over * stride_l;
+
+        let dilated_x: u32 = dilate_16_to_u32(linear_x_offset, 0);
+        let dilated_y: u32 = dilate_16_to_u32(linear_y_offset, 1);
+
+        let mut thread_s_pos = (*maze).add_x(s_pos, dilated_x);
+        thread_s_pos = (*maze).add_y(thread_s_pos, dilated_y);
+
+        let mut seed_val: u32 = 0u32;
+        let mut flip: bool = false;
+
+        for _ in 0..cycles {
+            (*maze).process_stride(stride_l, thread_s_pos, flip, idx as u32, &mut seed_val);
+            flip = !flip
+        }
+    }
+}
+
+//todo add launcher
