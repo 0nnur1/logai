@@ -159,26 +159,26 @@ impl<const SIZE: usize, const LENGTH: u16> Maze<SIZE, LENGTH> {
     // and the -_masks have all 1s for the spots above where needed so they dont break shit and wrap
     #[inline(always)]
     pub fn add_x(&self, p: u32, dx_dilated: u32) -> u32 {
-        let r: u32 = (p | self.x_mask).wrapping_add(dx_dilated);
-        (r & self.x_mask) | (p & self.y_mask)
+        let r: u32 = (p | self.y_mask).wrapping_add(dx_dilated);
+        ((r & self.x_mask) | (p & self.y_mask)) & self.chopper
     }
 
     #[inline(always)]
     pub fn sub_x(&self, p: u32, dx_dilated: u32) -> u32 {
-        let r: u32 = (p | self.x_mask).wrapping_sub(dx_dilated);
-        (r & self.x_mask) | (p & self.y_mask)
+        let r: u32 = (p | self.y_mask).wrapping_sub(dx_dilated);
+        ((r & self.x_mask) | (p & self.y_mask)) & self.chopper
     }
 
     #[inline(always)]
     pub fn add_y(&self, p: u32, dy_dilated: u32) -> u32 {
-        let r: u32 = (p | self.y_mask).wrapping_add(dy_dilated);
-        (r & self.y_mask) | (p & self.x_mask)
+        let r: u32 = (p | self.x_mask).wrapping_add(dy_dilated);
+        ((r & self.y_mask) | (p & self.x_mask)) & self.chopper
     }
 
     #[inline(always)]
     pub fn sub_y(&self, p: u32, dy_dilated: u32) -> u32 {
-        let r: u32 = (p | self.y_mask).wrapping_sub(dy_dilated);
-        (r & self.y_mask) | (p & self.x_mask)
+        let r: u32 = (p | self.x_mask).wrapping_sub(dy_dilated);
+        ((r & self.y_mask) | (p & self.x_mask)) & self.chopper
     }
 
     /// heyyy buddyyy, so if you use anything for this which doesnt follow these rules, you get (drumroll please) UB
@@ -203,11 +203,15 @@ impl<const SIZE: usize, const LENGTH: u16> Maze<SIZE, LENGTH> {
         debug_assert!(weights.iter().all(|&w| w > 0));
         debug_assert!(LENGTH >= 16);
         debug_assert!(LENGTH <= 1024);
+
+        let shift: u8 = bits_of_length * 2;
+
         Maze {
             cells: [Cell::new(); SIZE],
             length: LENGTH,
-            x_mask: 0x55555555 | (u32::MAX << bits_of_length),
-            y_mask: 0xAAAAAAAA | (u32::MAX << (bits_of_length + 1)),
+            x_mask: 0x55555555 | (u32::MAX << shift),
+            y_mask: 0xAAAAAAAA | (u32::MAX << shift),
+            chopper: !(u32::MAX << shift),
             leaderboard_weight: weights,
         }
     }
@@ -336,87 +340,6 @@ pub const fn dilate_16_to_u32(input: u16, shift: u8) -> u32 {
 // so if your struggling to understand do i have the method for you...
 // git gud.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dilate_x() {
-        assert_eq!(dilate_16_to_u32(0b1, 0), 0x1);
-        assert_eq!(dilate_16_to_u32(0b10, 0), 0x4);
-        assert_eq!(dilate_16_to_u32(0b11, 0), 0x5);
-    }
-
-    #[test]
-    fn dilate_y() {
-        assert_eq!(dilate_16_to_u32(0b1, 1), 0x2);
-        assert_eq!(dilate_16_to_u32(0b10, 1), 0x8);
-        assert_eq!(dilate_16_to_u32(0b11, 1), 0xA);
-    }
-
-    #[test]
-    fn cellstate_new_is_zero() {
-        assert_eq!(CellState::new().state, 0);
-    }
-
-    #[test]
-    fn cell_new_is_zeroed() {
-        let c = Cell::new();
-        assert_eq!(c.parts[0].state, 0);
-        assert_eq!(c.parts[1].state, 0);
-    }
-
-    #[test]
-    fn apply_action_updates_when_not_skipped() {
-        let mut s = CellState::new();
-
-        let action = (0b0011 << WALLS_SHIFT) | (2 << IDENTITY_SHIFT);
-
-        s.apply_action(action, 0xFF, false);
-
-        assert_ne!(s.state, 0);
-
-        assert!(((s.state & IDENTITY_MASK) >> IDENTITY_SHIFT) < 5);
-        assert!(((s.state & WALLS_MASK) >> WALLS_SHIFT) < 16);
-    }
-
-    #[test]
-    fn maze_constructor_sets_length() {
-        const L: u16 = 16;
-        const S: usize = (L as usize) * (L as usize);
-
-        let maze = Maze::<S, L>::new(3, [1; 5]);
-
-        assert_eq!(maze.length, L);
-    }
-    #[test]
-
-    fn best_action_returns_valid_state() {
-        let neighborhood = [0u8; 25];
-
-        let action = CellState::get_best_action(neighborhood, [1; 5]);
-
-        let walls = (action & WALLS_MASK) >> WALLS_SHIFT;
-        let id = (action & IDENTITY_MASK) >> IDENTITY_SHIFT;
-
-        assert!(walls < 16);
-        assert!(id < 5);
-
-        // sleep bit should never be written
-        assert_eq!(action & 1, 0);
-    }
-    #[test]
-    fn get_root_uses_correct_half() {
-        let mut c = Cell::new();
-
-        c.parts[0].state = 17;
-        c.parts[1].state = 42;
-
-        assert_eq!(c.get_root(false), 17);
-        assert_eq!(c.get_root(true), 42);
-    }
-}
-
 #[cuda_module]
 pub mod kernel {
     use super::*;
@@ -429,6 +352,8 @@ pub mod kernel {
         cycles: u16,
         maze: *mut Maze<SIZE, LENGTH>,
         total_threads: u16,
+        seed: u32,
+        flip: bool,
     ) {
         let idx: u16 = (thread::blockIdx_x() as u16) * (thread::blockDim_x() as u16)
             + (thread::threadIdx_x() as u16);
@@ -454,14 +379,240 @@ pub mod kernel {
         let mut thread_s_pos = (*maze).add_x(s_pos, dilated_x);
         thread_s_pos = (*maze).add_y(thread_s_pos, dilated_y);
 
-        let mut seed_val: u32 = 0u32;
-        let mut flip: bool = false;
+        let mut seed_val: u32 = seed;
+        let mut flip_act: bool = flip;
 
         for _ in 0..cycles {
-            (*maze).process_stride(stride_l, thread_s_pos, flip, idx as u32, &mut seed_val);
-            flip = !flip
+            (*maze).process_stride(stride_l, thread_s_pos, flip_act, idx as u32, &mut seed_val);
+            flip_act = !flip_act
         }
     }
 }
 
 //todo add launcher
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEN: u16 = 16;
+    const SIZE: usize = (LEN as usize) * (LEN as usize);
+
+    fn maze() -> Maze<SIZE, LEN> {
+        Maze::new(4, [1, 2, 3, 4, 5])
+    }
+
+    #[test]
+    fn dilate_basic_values() {
+        assert_eq!(dilate_16_to_u32(0, 0), 0);
+        assert_eq!(dilate_16_to_u32(1, 0), 0x1);
+        assert_eq!(dilate_16_to_u32(2, 0), 0x4);
+        assert_eq!(dilate_16_to_u32(3, 0), 0x5);
+
+        assert_eq!(dilate_16_to_u32(1, 1), 0x2);
+        assert_eq!(dilate_16_to_u32(2, 1), 0x8);
+        assert_eq!(dilate_16_to_u32(3, 1), 0xA);
+    }
+
+    #[test]
+    fn dilate_preserves_axis_bits() {
+        for i in 0..LEN {
+            let x = dilate_16_to_u32(i, 0);
+            let y = dilate_16_to_u32(i, 1);
+
+            assert_eq!(x & YMASK, 0);
+            assert_eq!(y & XMASK, 0);
+        }
+    }
+
+    #[test]
+    fn maze_new_initializes_everything() {
+        let maze = maze();
+
+        assert_eq!(maze.length, LEN);
+        assert_eq!(maze.leaderboard_weight, [1, 2, 3, 4, 5]);
+
+        for c in maze.cells {
+            assert_eq!(c.parts[0].state, 0);
+            assert_eq!(c.parts[1].state, 0);
+        }
+    }
+    #[test]
+    fn x_wraps_correctly() {
+        let maze = maze();
+
+        let start = dilate_16_to_u32(LEN - 1, 0);
+
+        let end = maze.add_x(start, dilate_16_to_u32(1, 0));
+
+        assert_eq!(end & XMASK, 0);
+    }
+
+    #[test]
+    fn y_wraps_correctly() {
+        let maze = maze();
+
+        let start = dilate_16_to_u32(LEN - 1, 1);
+
+        let end = maze.add_y(start, dilate_16_to_u32(1, 1));
+
+        assert_eq!(end & YMASK, 0);
+    }
+
+    #[test]
+    fn cellstate_new_is_zero() {
+        let c = CellState::new();
+        assert_eq!(c.state, 0);
+    }
+
+    #[test]
+    fn cell_new_initializes_both_buffers() {
+        let c = Cell::new();
+
+        assert_eq!(c.parts[0].state, 0);
+        assert_eq!(c.parts[1].state, 0);
+    }
+
+    #[test]
+    fn get_root_respects_flip() {
+        let mut c = Cell::new();
+
+        c.parts[0].state = 7;
+        c.parts[1].state = 9;
+
+        assert_eq!(c.get_root(false), 7);
+        assert_eq!(c.get_root(true), 9);
+    }
+
+    #[test]
+    fn apply_action_skip_preserves_action_bits() {
+        let mut s = CellState::new();
+
+        s.apply_action(0b11110010, 0xFF, true);
+
+        assert_eq!(s.state & WALLS_MASK, 0);
+    }
+
+    #[test]
+    fn apply_action_non_skip_can_modify() {
+        let mut s = CellState::new();
+
+        s.apply_action(0b10100010, 0xFF, false);
+
+        assert_ne!(s.state, 0);
+    }
+
+    #[test]
+    fn best_action_returns_valid_encoding() {
+        let neighborhood = [0u8; 25];
+
+        let action = CellState::get_best_action(neighborhood, [1, 1, 1, 1, 1]);
+
+        let id = (action & IDENTITY_MASK) >> IDENTITY_SHIFT;
+        let walls = (action & WALLS_MASK) >> WALLS_SHIFT;
+
+        assert!(id < 5);
+        assert!(walls < 16);
+    }
+
+    #[test]
+    fn act_only_writes_inactive_buffer() {
+        let mut c = Cell::new();
+
+        c.parts[0].state = 10;
+        c.parts[1].state = 22;
+
+        c.act(false, [0; 25], [1, 1, 1, 1, 1], 0xFF, false);
+
+        assert_eq!(c.parts[0].state, 10);
+    }
+
+    #[test]
+    fn process_stride_executes() {
+        let mut maze = maze();
+
+        let mut seed = 0;
+
+        unsafe {
+            maze.process_stride(16, 0, false, 0, &mut seed);
+        }
+    }
+
+    #[test]
+    fn process_stride_is_deterministic() {
+        let mut a = maze();
+        let mut b = maze();
+
+        let mut sa = 12345;
+        let mut sb = 12345;
+
+        unsafe {
+            a.process_stride(16, 0, false, 0, &mut sa);
+            b.process_stride(16, 0, false, 0, &mut sb);
+        }
+
+        for i in 0..SIZE {
+            assert_eq!(a.cells[i].parts[0].state, b.cells[i].parts[0].state);
+            assert_eq!(a.cells[i].parts[1].state, b.cells[i].parts[1].state);
+        }
+
+        assert_eq!(sa, sb);
+    }
+
+    #[test]
+    fn repeated_cycles_are_deterministic() {
+        let mut a = maze();
+        let mut b = maze();
+
+        let mut sa = 99;
+        let mut sb = 99;
+
+        for flip in [false, true, false, true] {
+            unsafe {
+                a.process_stride(16, 0, flip, 3, &mut sa);
+                b.process_stride(16, 0, flip, 3, &mut sb);
+            }
+        }
+
+        for i in 0..SIZE {
+            assert_eq!(a.cells[i].parts[0].state, b.cells[i].parts[0].state);
+            assert_eq!(a.cells[i].parts[1].state, b.cells[i].parts[1].state);
+        }
+    }
+
+    #[test]
+    fn no_cell_produces_invalid_state() {
+        let mut maze = maze();
+
+        let mut seed = 0;
+
+        unsafe {
+            maze.process_stride(16, 0, false, 1, &mut seed);
+        }
+
+        for cell in maze.cells {
+            for part in cell.parts {
+                let id = (part.state & IDENTITY_MASK) >> IDENTITY_SHIFT;
+                let walls = (part.state & WALLS_MASK) >> WALLS_SHIFT;
+
+                assert!(id < 5);
+                assert!(walls < 16);
+            }
+        }
+    }
+    #[test]
+    fn coordinates_never_leave_range() {
+        let maze = maze();
+
+        for x in 0..LEN {
+            for y in 0..LEN {
+                let p = dilate_16_to_u32(x, 0) | dilate_16_to_u32(y, 1);
+
+                assert!((maze.add_x(p, dilate_16_to_u32(1, 0)) as usize) < SIZE);
+                assert!((maze.sub_x(p, dilate_16_to_u32(1, 0)) as usize) < SIZE);
+                assert!((maze.add_y(p, dilate_16_to_u32(1, 1)) as usize) < SIZE);
+                assert!((maze.sub_y(p, dilate_16_to_u32(1, 1)) as usize) < SIZE);
+            }
+        }
+    }
+}

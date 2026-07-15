@@ -37,5 +37,6 @@ pub struct Maze<const SIZE: usize, const LENGTH: u16> {
     pub length: u16,
     pub x_mask: u32,
     pub y_mask: u32,
+    pub chopper: u32,
     pub leaderboard_weight: [u8; 5],
 }
